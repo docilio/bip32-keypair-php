@@ -1,9 +1,9 @@
 <?php
-/*
+/**
  * This file is a part of "furqansiddiqui/bip32-keypair-php" package.
  * https://github.com/furqansiddiqui/bip32-keypair-php
  *
- * Copyright (c) Furqan A. Siddiqui <hello@furqansiddiqui.com>
+ * Copyright (c) 2020 Furqan A. Siddiqui <hello@furqansiddiqui.com>
  *
  * For the full copyright and license information, please view the LICENSE
  * file that was distributed with this source code or visit following link:
@@ -14,12 +14,12 @@ declare(strict_types=1);
 
 namespace FurqanSiddiqui\BIP32\KeyPair;
 
-use Comely\Buffer\AbstractByteArray;
-use Comely\Buffer\Buffer;
-use Comely\Buffer\Bytes32;
-use FurqanSiddiqui\BIP32\BIP32;
-use FurqanSiddiqui\BIP32\Buffers\Bits32;
-use FurqanSiddiqui\BIP32\Buffers\Signature;
+use Comely\DataTypes\Buffer\Base16;
+use FurqanSiddiqui\BIP32\ECDSA\Curves;
+use FurqanSiddiqui\BIP32\Exception\PublicKeyException;
+use FurqanSiddiqui\BIP32\Extend\PrivateKeyInterface;
+use FurqanSiddiqui\BIP32\Extend\PublicKeyInterface;
+use FurqanSiddiqui\ECDSA\ECC\EllipticCurveInterface;
 
 /**
  * Class PublicKey
@@ -27,120 +27,152 @@ use FurqanSiddiqui\BIP32\Buffers\Signature;
  */
 class PublicKey implements PublicKeyInterface
 {
-    /** @var \FurqanSiddiqui\BIP32\Buffers\Bits32 */
-    public readonly Bits32 $fingerPrint;
-    /** @var bool */
-    public readonly bool $isComplete;
+    /** @var null|PrivateKey */
+    protected $privateKey;
+    /** @var null|int */
+    protected $curve;
+    /** @var \FurqanSiddiqui\ECDSA\ECC\PublicKey */
+    protected $eccPublicKeyObj;
+    /** @var null|Base16 */
+    private $fingerPrint;
 
     /**
-     * @param \FurqanSiddiqui\BIP32\BIP32 $bip32
-     * @param \Comely\Buffer\AbstractByteArray $publicKey
-     * @return static
-     * @throws \FurqanSiddiqui\ECDSA\Exception\KeyPairException
+     * PublicKey constructor.
+     * @param PrivateKeyInterface|null $privateKey
+     * @param EllipticCurveInterface|null $curve
+     * @param Base16|null $publicKey
+     * @param bool|null $pubKeyArgIsCompressed
+     * @throws PublicKeyException
      */
-    public static function fromUncompressed(BIP32 $bip32, AbstractByteArray $publicKey): static
+    public function __construct(?PrivateKeyInterface $privateKey, ?EllipticCurveInterface $curve = null, ?Base16 $publicKey = null, ?bool $pubKeyArgIsCompressed = null)
     {
-        $pub = \FurqanSiddiqui\ECDSA\ECC\PublicKey::fromDER($publicKey);
-        return new static($bip32, $pub);
-    }
+        $eccCurve = null; // ECDSA curve instance
 
-    /**
-     * @param \FurqanSiddiqui\BIP32\BIP32 $bip32
-     * @param \FurqanSiddiqui\ECDSA\ECC\PublicKey $eccPublicKey
-     */
-    public function __construct(
-        public readonly BIP32                               $bip32,
-        public readonly \FurqanSiddiqui\ECDSA\ECC\PublicKey $eccPublicKey
-    )
-    {
-        $this->isComplete = strlen($this->eccPublicKey->y) === 64;
-        $this->fingerPrint = new Bits32(
-            substr(hash("ripemd160", hash("sha256", $this->compressed()->raw(), true), true), 0, 4)
-        );
-    }
-
-    /**
-     * @return \Comely\Buffer\Buffer
-     */
-    public function compressed(): Buffer
-    {
-        return $this->eccPublicKey->getCompressed();
-    }
-
-    /**
-     * @param \FurqanSiddiqui\BIP32\Buffers\Signature $sig
-     * @param \Comely\Buffer\Bytes32 $msgHash
-     * @param int|null $recId
-     * @return bool
-     */
-    public function verifyPublicKey(Signature $sig, Bytes32 $msgHash, ?int $recId = null): bool
-    {
-        if (!$this->isComplete) {
-            return false;
-        }
-
-        $recPub = $this->bip32->ecc->recoverPublicKeyFromSignature($sig->eccSignature, $msgHash, $recId);
-        return $this->eccPublicKey->compare($recPub) === 0;
-    }
-
-    /**
-     * @param \FurqanSiddiqui\BIP32\Buffers\Signature $sig
-     * @param \Comely\Buffer\Bytes32 $msgHash
-     * @return bool
-     */
-    public function verifySignature(Signature $sig, Bytes32 $msgHash): bool
-    {
-        if (!$this->isComplete) {
-            return false;
-        }
-
-        return $this->bip32->ecc->verify($this->eccPublicKey, $sig->eccSignature, $msgHash);
-    }
-
-    /**
-     * @param \FurqanSiddiqui\BIP32\KeyPair\PublicKey|\FurqanSiddiqui\ECDSA\ECC\PublicKey $pub2
-     * @return int
-     */
-    public function compare(PublicKey|\FurqanSiddiqui\ECDSA\ECC\PublicKey $pub2): int
-    {
-        if ($pub2 instanceof self) {
-            $pub2 = $pub2->eccPublicKey;
-        }
-
-        if ($this->isComplete) {
-            return $this->eccPublicKey->compare($pub2);
-        }
-
-        if (hash_equals($this->eccPublicKey->x, $pub2->x)) {
-            if (hash_equals($this->eccPublicKey->prefix, $pub2->prefix)) {
-                return 0;
+        // Generating from Private key?
+        if ($privateKey) {
+            $this->privateKey = $privateKey;
+            $this->curve = null;
+            $privateKeyCurveId = $this->privateKey->getEllipticCurveId();
+            if (!$privateKeyCurveId) {
+                throw new PublicKeyException('Cannot generate Public key; No ECDSA curve defined for private key');
             }
 
-            return -3;
+            $eccCurve = Curves::getInstanceOf($privateKeyCurveId);
+        } else {
+            $eccCurve = $curve;
+            $this->curve = Curves::getCurveId($eccCurve);
         }
 
-        return -1;
-    }
+        if (!$eccCurve instanceof EllipticCurveInterface) {
+            throw new PublicKeyException('No ECDSA curve has been set to generate Public Key obj');
+        }
 
-    /**
-     * @param \FurqanSiddiqui\BIP32\Buffers\Signature $sig
-     * @param \Comely\Buffer\Bytes32 $msgHash
-     * @return int|bool
-     */
-    public function findRecoveryId(Signature $sig, Bytes32 $msgHash): int|bool
-    {
-        if ($this->isComplete) {
-            for ($i = 0; $i < 4; $i++) {
+        // Generate Public Key
+        if ($this->privateKey) {
+            // Derive public key from private key
+            $eccPublicKey = $eccCurve->getPublicKey($this->privateKey->base16());
+        } elseif ($publicKey) {
+            if ($pubKeyArgIsCompressed === true) {
+                // Argument is a compressed public key
+                $eccPublicKey = $eccCurve->getPublicKeyFromCompressed($publicKey);
+            } elseif ($pubKeyArgIsCompressed === false) {
+                // Argument is a full (uncompressed) public key
+                $eccPublicKey = $eccCurve->usePublicKey($publicKey);
+            } else {
+                // Attempt 1, assume its full (uncompressed public key)
                 try {
-                    $recPub = $this->bip32->ecc->recoverPublicKeyFromSignature($sig->eccSignature, $msgHash, $i);
-                    if ($this->eccPublicKey->compare($recPub) === 0) {
-                        return $i;
+                    $eccPublicKey = $eccCurve->usePublicKey($publicKey);
+                } catch (\Exception $e) {
+                }
+
+                // Attempt 2, has to be a compressed public key
+                if (!isset($eccPublicKey)) {
+                    try {
+                        $eccPublicKey = $eccCurve->getPublicKeyFromCompressed($publicKey);
+                    } catch (\Exception $e) {
                     }
-                } catch (\Exception) {
                 }
             }
         }
 
-        return false;
+        if (!isset($eccPublicKey)) {
+            throw new PublicKeyException('Could not generate Public key from given argument(s)');
+        }
+
+        $this->eccPublicKeyObj = $eccPublicKey;
+    }
+
+    /**
+     * @return int|null
+     */
+    public function getEllipticCurveId(): ?int
+    {
+        if ($this->privateKey) {
+            return $this->privateKey->getEllipticCurveId();
+        }
+
+        if ($this->curve) {
+            return $this->curve;
+        }
+
+        return null;
+    }
+
+    /**
+     * @return \FurqanSiddiqui\ECDSA\ECC\PublicKey
+     */
+    public function getEllipticCurvePubKeyObj(): \FurqanSiddiqui\ECDSA\ECC\PublicKey
+    {
+        return $this->eccPublicKeyObj;
+    }
+
+    /**
+     * @return Base16
+     */
+    public function full(): Base16
+    {
+        return $this->eccPublicKeyObj->getUnCompressed();
+    }
+
+    /**
+     * @return Base16
+     */
+    public function compressed(): Base16
+    {
+        return $this->eccPublicKeyObj->getCompressed();
+    }
+
+    /**
+     * @return Base16
+     */
+    public function fingerPrint(): Base16
+    {
+        if ($this->fingerPrint) {
+            return $this->fingerPrint;
+
+        }
+
+        $fingerPrint = $this->compressed()->binary()
+            ->hash()->sha256()
+            ->hash()->ripeMd160(4);
+
+        $this->fingerPrint = $fingerPrint->base16();
+        return $this->fingerPrint;
+    }
+
+    /**
+     * @return bool
+     */
+    public function hasPrivateKey(): bool
+    {
+        return $this->privateKey ? true : false;
+    }
+
+    /**
+     * @return PrivateKeyInterface|null
+     */
+    public function privateKey(): ?PrivateKeyInterface
+    {
+        return $this->privateKey;
     }
 }

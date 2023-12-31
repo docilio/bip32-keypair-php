@@ -15,9 +15,9 @@ declare(strict_types=1);
 namespace FurqanSiddiqui\BIP32\Exception;
 
 /**
- * Class ExtendedKeyException
+ * Class InvalidMasterKeySeedException
  * @package FurqanSiddiqui\BIP32\Exception
  */
-class ExtendedKeyException extends KeyPairException
+class InvalidMasterKeySeedException extends BIP32_Exception
 {
 }

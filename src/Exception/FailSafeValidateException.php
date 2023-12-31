@@ -15,9 +15,9 @@ declare(strict_types=1);
 namespace FurqanSiddiqui\BIP32\Exception;
 
 /**
- * Class ExtendedKeyException
+ * Class FailSafeValidateException
  * @package FurqanSiddiqui\BIP32\Exception
  */
-class ExtendedKeyException extends KeyPairException
+class FailSafeValidateException extends PublicKeyException
 {
 }
